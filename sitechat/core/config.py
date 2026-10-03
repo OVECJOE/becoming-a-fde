@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     )
 
     user_agent: str = "SitechatBot/1.0 (+https://github.com/OVECJOE/becoming-a-fde)"
+    max_depth: int = 5
+    crawl_delay_seconds: float = 3
 
 
 settings = Settings()

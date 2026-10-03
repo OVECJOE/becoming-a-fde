@@ -38,7 +38,7 @@ async def fetch_pending(db: aiosqlite.Connection, limit: int):
             ORDER BY created_at ASC
             LIMIT ?
         )
-        RETURNING id, url
+        RETURNING id, url, depth
     """
     async with db.execute(sql, (limit,)) as cursor:
         results = [{"id": row[0], "url": row[1]} for row in await cursor.fetchall()]
