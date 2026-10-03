@@ -1,7 +1,4 @@
 import asyncio
-from pathlib import Path
-
-import aiosqlite
 
 from core.db import setup_db
 from core.db.helpers import init_db
