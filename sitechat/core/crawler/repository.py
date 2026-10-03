@@ -1,5 +1,4 @@
 import asyncio
-from itertools import chain
 from urllib.robotparser import RobotFileParser
 
 from core.config import settings
