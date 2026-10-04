@@ -34,7 +34,7 @@ async def embed_and_store_chunk(
 
 
 async def retrieve_relevant_chunks(
-    collection: Collection, query: str, n_results: int = 5
+    collection: Collection, query: str, n_results: int = 10
 ) -> list[dict]:
     query_vec = await embed_text(query)
     results = collection.query(query_embeddings=[query_vec], n_results=n_results)

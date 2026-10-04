@@ -9,9 +9,7 @@ async def setup_db():
     config = load_config()
     async with aiosqlite.connect(DATABASE_URL) as db:
         await db.execute("PRAGMA foreign_keys = ON")
-        stats = await apply_migrations(
-            db, config["current_version"]
-        )
+        stats = await apply_migrations(db, config["current_version"])
 
         if stats:
             print(f"Applied {stats[0]} migrations, now at {stats[1]}.")

@@ -9,6 +9,7 @@ from chromadb import Collection
 from protego import Protego
 from selectolax.lexbor import LexborHTMLParser
 
+from core.chat.embedder import embed_and_store_chunk
 from core.config import settings
 from core.crawler.helpers import extract_blocks, fetch_page, parse_sitemap
 from core.db.repository import (
@@ -18,7 +19,6 @@ from core.db.repository import (
     mark_status,
     url_exists,
 )
-from core.embedder import embed_and_store_chunk
 from schemas import Page
 
 
