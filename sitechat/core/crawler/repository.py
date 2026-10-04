@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -8,11 +9,12 @@ import httpx
 from selectolax.lexbor import LexborHTMLParser
 
 from core.config import settings
-from core.crawler.helpers import fetch_page, parse_sitemap
+from core.crawler.helpers import extract_blocks, fetch_page, parse_sitemap
 from core.db.repository import (
     PageStatus,
     fetch_pending,
     insert_page,
+    insert_page_chunk,
     mark_status,
     url_exists,
 )
@@ -95,7 +97,14 @@ async def process_page(
                 f"[ERROR] Could not complete link processing for '{link}' (reason: {e!s})"
             )
 
-    # TODO: extract and persist main text content from `tree`
+    # extract and persist main text content from `tree`
+    chunks = chunk_blocks(extract_blocks(tree), 500)
+    await asyncio.gather(
+        *[
+            insert_page_chunk(db, page.id, chunk_idx, chunk)
+            for chunk_idx, chunk in enumerate(chunks)
+        ]
+    )
 
     await mark_status(db, url, PageStatus.CRAWLED, crawled_at=datetime.now(UTC))
 
@@ -116,39 +125,23 @@ async def crawl_loop(db, rp, domain: str) -> None:
 def chunk_blocks(blocks: list[str], target_chars: int = 1000) -> list[str]:
     chunks: list[str] = []
     current_chunk: str = ""
-    current_cursor: int = 0
 
-    for block in blocks:
-        perverse_block = block
-        residue: str = ""
+    pending = deque(blocks)
+    while pending:
+        piece = pending.popleft()
+        if len(piece) > target_chars:
+            split = piece.rsplit("\n", 1)
+            if len(split) == 2:
+                pending.appendleft(split[1])
+                pending.appendleft(split[0])
+                continue
 
-        while len(perverse_block) > target_chars:
-            result = perverse_block.rsplit("\n", 1)
-            if len(result) > 1:
-                perverse_block = result[0]
-                residue += result[1]
-            else:
-                break
-
-        if current_cursor + len(perverse_block) > target_chars and current_chunk:
+        candidate = f"{current_chunk}\n{piece}" if current_chunk else piece
+        if len(candidate) > target_chars and current_chunk:
             chunks.append(current_chunk)
-            current_chunk = ""
-            current_cursor = 0
-
-        if current_chunk:
-            current_chunk += f"\n{perverse_block}"
-            current_cursor += len(perverse_block) + 1
+            current_chunk = piece
         else:
-            current_chunk = perverse_block
-            current_cursor = len(perverse_block)
-
-        if residue:
-            if current_chunk:
-                current_chunk += f"\n{residue}"
-                current_cursor += len(residue) + 1
-            else:
-                current_chunk = residue
-                current_cursor = len(residue)
+            current_chunk = candidate
 
     if current_chunk:
         chunks.append(current_chunk)
