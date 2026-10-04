@@ -9,4 +9,4 @@ class Page(BaseModel):
 
 class UserCommand(BaseModel):
     command: str
-    args: list[str]
+    args: str

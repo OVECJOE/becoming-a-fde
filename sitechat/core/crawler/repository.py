@@ -2,10 +2,11 @@ import asyncio
 from collections import deque
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
-from urllib.robotparser import RobotFileParser
 
 import aiosqlite
 import httpx
+from chromadb import Collection
+from protego import Protego
 from selectolax.lexbor import LexborHTMLParser
 
 from core.config import settings
@@ -14,18 +15,25 @@ from core.db.repository import (
     PageStatus,
     fetch_pending,
     insert_page,
-    insert_page_chunk,
     mark_status,
     url_exists,
 )
+from core.embedder import embed_and_store_chunk
 from schemas import Page
 
 
-async def get_crawl_rules(domain: str) -> tuple[RobotFileParser, list[str]]:
-    rp = RobotFileParser(url=f"https://{domain}/robots.txt")
-    rp.read()
+async def get_crawl_rules(domain: str) -> tuple[Protego, list[str]]:
+    print(f"Loading robots.txt for {domain}...")
+    robots_txt = await fetch_page(
+        url=f"https://{domain}/robots.txt",
+        user_agent=settings.user_agent,
+        content_type="text/plain",
+    )
+    rp = Protego.parse(robots_txt)
+    print(f"Loaded robots.txt for {domain}.")
 
-    sitemaps = rp.site_maps() or [f"https://{domain}/sitemap.xml"]
+    sitemaps = list(rp.sitemaps) or [f"https://{domain}/sitemap.xml"]
+    print(f"Checking {len(sitemaps)} sitemaps...")
     results = await asyncio.gather(
         *[parse_sitemap(sitemap, settings.user_agent) for sitemap in sitemaps],
         return_exceptions=True,
@@ -41,6 +49,7 @@ async def get_crawl_rules(domain: str) -> tuple[RobotFileParser, list[str]]:
 
         seed_urls.extend(result)
 
+    print(f"Using {len(seed_urls)} seed URLs for {domain}.")
     return rp, seed_urls or [f"https://{domain}"]
 
 
@@ -61,23 +70,33 @@ def extract_links(
 
 
 async def build_seed_urls(homepage: str) -> list[str]:
+    print(f"Fetching homepage {homepage} for links...")
     parsed = urlparse(homepage)
     html_content = await fetch_page(homepage, settings.user_agent)
-    return extract_links(LexborHTMLParser(html_content), homepage, parsed.netloc)
+    links = extract_links(LexborHTMLParser(html_content), homepage, parsed.netloc)
+    print(f"Found {len(links)} links on {homepage}.")
+    return links
 
 
 async def process_page(
-    db: aiosqlite.Connection, rp: RobotFileParser, page: Page, target_domain: str
+    db: aiosqlite.Connection,
+    collection: Collection,
+    rp: Protego,
+    page: Page,
+    target_domain: str,
 ) -> None:
     url = page.url.encoded_string()
+    print(f"Processing {url}...")
 
-    if not rp.can_fetch(settings.user_agent, url):
+    if not rp.can_fetch(url, settings.user_agent):
+        print(f"Skipping {url}: blocked by robots.txt.")
         await mark_status(db, url, PageStatus.FAILED)
         return
 
     try:
         html_content = await fetch_page(url, settings.user_agent)
     except httpx.HTTPError:
+        print(f"Skipping {url}: fetch failed.")
         await mark_status(db, url, PageStatus.FAILED)
         return
 
@@ -99,27 +118,34 @@ async def process_page(
 
     # extract and persist main text content from `tree`
     chunks = chunk_blocks(extract_blocks(tree), 500)
+    print(f"Saving {len(chunks)} chunks for {url}...")
     await asyncio.gather(
         *[
-            insert_page_chunk(db, page.id, chunk_idx, chunk)
+            embed_and_store_chunk(db, collection, page.id, chunk_idx, chunk)
             for chunk_idx, chunk in enumerate(chunks)
         ]
     )
 
     await mark_status(db, url, PageStatus.CRAWLED, crawled_at=datetime.now(UTC))
+    print(f"Crawled {url}.")
 
 
-async def crawl_loop(db, rp, domain: str) -> None:
+async def crawl_loop(db, collection: Collection, rp, domain: str) -> None:
+    print(f"Crawl loop started for {domain}.")
     while True:
         batch = await fetch_pending(db, limit=1)
         if not batch:
+            print(f"Crawl queue empty for {domain}, finishing.")
             break
         page = Page(id=batch[0]["id"], url=batch[0]["url"], depth=batch[0]["depth"])
+        print(f"Crawling {page.url.encoded_string()}...")
 
         delay = rp.crawl_delay(settings.user_agent) or settings.crawl_delay_seconds
+        print(f"Waiting {float(delay)}s before fetch...")
         await asyncio.sleep(float(delay))
 
-        await process_page(db, rp, page, domain)
+        await process_page(db, collection, rp, page, domain)
+    print(f"Crawl loop finished for {domain}.")
 
 
 def chunk_blocks(blocks: list[str], target_chars: int = 1000) -> list[str]:

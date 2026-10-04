@@ -41,7 +41,7 @@ async def fetch_pending(db: aiosqlite.Connection, limit: int):
         RETURNING id, url, depth
     """
     async with db.execute(sql, (limit,)) as cursor:
-        results = [{"id": row[0], "url": row[1]} for row in await cursor.fetchall()]
+        results = [{"id": row[0], "url": row[1], "depth": row[2]} for row in await cursor.fetchall()]
         await db.commit()
         return results
 
@@ -77,5 +77,7 @@ async def insert_page_chunk(db: aiosqlite.Connection, page_id: int, chunk_index:
         ) VALUES (?, ?, ?, ?)
     """
     async with db.execute(sql, (page_id, chunk, chunk_index, datetime.now(UTC))) as cursor:
+        row_id = cursor.lastrowid
         await db.commit()
         assert cursor.rowcount == 1
+        return row_id

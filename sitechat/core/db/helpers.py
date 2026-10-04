@@ -46,9 +46,7 @@ def save_config(new_config: dict[str, int | str]):
 
 
 async def init_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(DATABASE_URL)
-    await db.execute("PRAGMA foreign_keys = ON")
-    return db
+    return await aiosqlite.connect(DATABASE_URL)
 
 
 async def apply_migrations(
@@ -59,8 +57,11 @@ async def apply_migrations(
     if migration_count == 0:
         return None
 
+    print(f"Applying {migration_count} migrations...")
     for file_path in new_ones:
+        print(f"Applying {file_path.name}...")
         with open(file_path, "r") as f:
             await db.executescript(f.read())
             await db.commit()
+        print(f"Applied {file_path.name}.")
     return migration_count, _extract_version_prefix(new_ones[-1].name)
