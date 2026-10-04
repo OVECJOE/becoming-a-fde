@@ -3,7 +3,7 @@ from core.db.helpers import apply_migrations, init_db, load_config, save_config
 
 async def setup_db():
     config = load_config()
-    async with init_db() as db:
+    async with await init_db() as db:
         stats = await apply_migrations(
             db, config["current_version"]
         )

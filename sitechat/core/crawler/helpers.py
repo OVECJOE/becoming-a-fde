@@ -2,6 +2,9 @@ import re
 import xml.etree.ElementTree as ET
 
 import httpx
+from selectolax.lexbor import LexborHTMLParser
+
+from core.constants import BLOCK_SELECTORS, NOISE_SELECTORS
 
 
 def _xml_namespace(tag: str) -> str | None:
@@ -27,3 +30,16 @@ async def parse_sitemap(url: str, user_agent: str) -> list[str]:
     ns = _xml_namespace(sitemap_xml.tag)
     locs = sitemap_xml.findall(".//sm:loc", namespaces={"sm": ns} if ns else None)
     return [loc.text for loc in locs if loc.text]
+
+
+def extract_blocks(tree: LexborHTMLParser) -> list[str]:
+    for selector in NOISE_SELECTORS:
+        for node in tree.css(selector):
+            node.decompose()
+
+    blocks = []
+    for node in tree.css(BLOCK_SELECTORS):
+        text = node.text(separator=" ", strip=True)
+        if text:
+            blocks.append(text)
+    return blocks

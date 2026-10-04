@@ -9,7 +9,6 @@ from selectolax.lexbor import LexborHTMLParser
 
 from core.config import settings
 from core.crawler.helpers import fetch_page, parse_sitemap
-from core.crawler.schemas import Page
 from core.db.repository import (
     PageStatus,
     fetch_pending,
@@ -17,6 +16,7 @@ from core.db.repository import (
     mark_status,
     url_exists,
 )
+from schemas import Page
 
 
 async def get_crawl_rules(domain: str) -> tuple[RobotFileParser, list[str]]:
@@ -64,13 +64,13 @@ async def build_seed_urls(homepage: str) -> list[str]:
     return extract_links(LexborHTMLParser(html_content), homepage, parsed.netloc)
 
 
-async def process_page(db: aiosqlite.Connection, rp: RobotFileParser, page: Page, target_domain: str) -> None:
+async def process_page(
+    db: aiosqlite.Connection, rp: RobotFileParser, page: Page, target_domain: str
+) -> None:
     url = page.url.encoded_string()
 
     if not rp.can_fetch(settings.user_agent, url):
-        await mark_status(
-            db, url, PageStatus.FAILED
-        )
+        await mark_status(db, url, PageStatus.FAILED)
         return
 
     try:
@@ -111,3 +111,45 @@ async def crawl_loop(db, rp, domain: str) -> None:
         await asyncio.sleep(float(delay))
 
         await process_page(db, rp, page, domain)
+
+
+def chunk_blocks(blocks: list[str], target_chars: int = 1000) -> list[str]:
+    chunks: list[str] = []
+    current_chunk: str = ""
+    current_cursor: int = 0
+
+    for block in blocks:
+        perverse_block = block
+        residue: str = ""
+
+        while len(perverse_block) > target_chars:
+            result = perverse_block.rsplit("\n", 1)
+            if len(result) > 1:
+                perverse_block = result[0]
+                residue += result[1]
+            else:
+                break
+
+        if current_cursor + len(perverse_block) > target_chars and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = ""
+            current_cursor = 0
+
+        if current_chunk:
+            current_chunk += f"\n{perverse_block}"
+            current_cursor += len(perverse_block) + 1
+        else:
+            current_chunk = perverse_block
+            current_cursor = len(perverse_block)
+
+        if residue:
+            if current_chunk:
+                current_chunk += f"\n{residue}"
+                current_cursor += len(residue) + 1
+            else:
+                current_chunk = residue
+                current_cursor = len(residue)
+
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks

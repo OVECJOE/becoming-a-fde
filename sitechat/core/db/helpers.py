@@ -45,8 +45,10 @@ def save_config(new_config: dict[str, int | str]):
         json.dump(new_config, f, indent=2)
 
 
-def init_db() -> aiosqlite.Connection:
-    return aiosqlite.connect(DATABASE_URL)
+async def init_db() -> aiosqlite.Connection:
+    db = await aiosqlite.connect(DATABASE_URL)
+    await db.execute("PRAGMA foreign_keys = ON")
+    return db
 
 
 async def apply_migrations(

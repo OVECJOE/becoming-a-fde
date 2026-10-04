@@ -65,3 +65,17 @@ async def url_exists(db: aiosqlite.Connection, url: str) -> bool:
     ) as cursor:
         result = await cursor.fetchone()
         return result[0] > 0 if result else False
+
+
+async def insert_page_chunk(db: aiosqlite.Connection, page_id: int, chunk_index: int, chunk: str):
+    sql = """
+        INSERT INTO page_chunks (
+            page_id,
+            content,
+            chunk_index,
+            created_at
+        ) VALUES (?, ?, ?, ?)
+    """
+    async with db.execute(sql, (page_id, chunk, chunk_index, datetime.now(UTC))) as cursor:
+        await db.commit()
+        assert cursor.rowcount == 1
