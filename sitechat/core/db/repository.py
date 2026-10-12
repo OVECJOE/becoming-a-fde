@@ -14,6 +14,9 @@ class PageStatus(StrEnum):
 async def insert_page(
     db: aiosqlite.Connection, url: str, depth: int, parent_url: str | None
 ):
+    if await url_exists(db, url):
+        return 0
+
     sql = """
         INSERT INTO pages (
             url,
@@ -26,6 +29,34 @@ async def insert_page(
     async with db.execute(sql, (url, parent_url, depth, datetime.now(UTC))) as cursor:
         await db.commit()
         assert cursor.rowcount == 1
+        return cursor.rowcount
+
+
+async def insert_pages(
+    db: aiosqlite.Connection, urls: list[str], depth: int, parent_url: str | None
+) -> int:
+    """Bulk-insert pages in a single transaction.
+
+    Relies on the UNIQUE constraint on `pages.url`: `INSERT OR IGNORE` skips any
+    URL that's already present, so there's no per-row existence check and only one
+    commit for the whole batch (instead of one per row). Returns the number of
+    rows actually inserted.
+    """
+    if not urls:
+        return 0
+    now = datetime.now(UTC)
+    rows = [(url, parent_url, depth, now) for url in urls]
+    sql = """
+        INSERT OR IGNORE INTO pages (
+            url,
+            status,
+            parent_url,
+            depth,
+            created_at
+        ) VALUES (?, 'pending', ?, ?, ?)
+    """
+    async with db.executemany(sql, rows) as cursor:
+        await db.commit()
         return cursor.rowcount
 
 

@@ -1,25 +1,99 @@
 import asyncio
+import xml.etree.ElementTree as ET
 from collections import deque
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
 
 import aiosqlite
 import httpx
+import openai
 from chromadb import Collection
 from protego import Protego
 from selectolax.lexbor import LexborHTMLParser
 
 from core.chat.embedder import embed_and_store_chunk
 from core.config import settings
-from core.crawler.helpers import extract_blocks, fetch_page, parse_sitemap
+from core.constants import RECOGNISED_SITEMAP_LOCATIONS
+from core.crawler.helpers import (
+    extract_blocks,
+    extract_locs,
+    fetch_page,
+    fetch_sitemap_root,
+    get_client,
+    sitemap_kind,
+)
 from core.db.repository import (
     PageStatus,
     fetch_pending,
-    insert_page,
+    insert_pages,
     mark_status,
-    url_exists,
 )
 from schemas import Page
+
+
+async def collect_seed_urls(
+    root_sitemaps: list[str],
+    user_agent: str,
+    max_depth: int = 3,
+    seen: set[str] | None = None,
+) -> list[str]:
+    """Expand root sitemaps into concrete page URLs.
+
+    A root sitemap is either a leaf `<urlset>` (its `<loc>`s are pages) or a
+    `<sitemapindex>` whose `<loc>`s point to more sitemaps, which may themselves
+    be indexes. Recurse into indexes up to `max_depth`, skipping any sitemap
+    already visited so a cycle (or a self-referencing index) can't spin forever.
+    """
+    seen = seen if seen is not None else set()
+    page_urls: set[str] = set()
+
+    async def walk(sitemap_url: str, depth: int) -> None:
+        norm = sitemap_url.split("#", 1)[0]
+        if depth > max_depth or norm in seen:
+            return
+        seen.add(norm)
+
+        try:
+            root = await fetch_sitemap_root(sitemap_url, user_agent)
+        except (httpx.HTTPError, ET.ParseError) as e:
+            print(f"[WARNING] Skipping sitemap {sitemap_url} ({type(e).__name__}): {e}")
+            return
+
+        kind = sitemap_kind(root)
+        if kind == "index":
+            children = extract_locs(root)
+            print(
+                f"Sitemap {sitemap_url} is an index -> {len(children)} child sitemaps (depth {depth})."
+            )
+            await asyncio.gather(*(walk(child, depth + 1) for child in children))
+        elif kind == "urlset":
+            locs = extract_locs(root)
+            print(
+                f"Sitemap {sitemap_url} is a leaf -> {len(locs)} page URLs (depth {depth})."
+            )
+            page_urls.update(locs)
+        else:
+            print(
+                f"[WARNING] {sitemap_url} has unrecognized root <{root.tag}>; ignoring."
+            )
+
+    await asyncio.gather(*(walk(s, 0) for s in root_sitemaps))
+    return list(page_urls)
+
+
+async def attempt_to_find_sitemaps(domain: str) -> list[str]:
+    client = get_client()
+    for location in RECOGNISED_SITEMAP_LOCATIONS:
+        url = f"https://{domain}{location}"
+        try:
+            response = await client.head(url, timeout=5.0)
+            response.raise_for_status()
+            return [url]
+        except httpx.HTTPError:
+            print(
+                f"[WARNING] '{location}' is not the root sitemap location for '{domain}'"
+            )
+    return []
 
 
 async def get_crawl_rules(domain: str) -> tuple[Protego, list[str]]:
@@ -32,25 +106,8 @@ async def get_crawl_rules(domain: str) -> tuple[Protego, list[str]]:
     rp = Protego.parse(robots_txt)
     print(f"Loaded robots.txt for {domain}.")
 
-    sitemaps = list(rp.sitemaps) or [f"https://{domain}/sitemap.xml"]
-    print(f"Checking {len(sitemaps)} sitemaps...")
-    results = await asyncio.gather(
-        *[parse_sitemap(sitemap, settings.user_agent) for sitemap in sitemaps],
-        return_exceptions=True,
-    )
-
-    seed_urls: list[str] = []
-    for idx, result in enumerate(results):
-        if isinstance(result, BaseException):
-            print(
-                f"[WARNING] Could not parse sitemap '{sitemaps[idx]}'; check and confirm it exists."
-            )
-            continue
-
-        seed_urls.extend(result)
-
-    print(f"Using {len(seed_urls)} seed URLs for {domain}.")
-    return rp, seed_urls or [f"https://{domain}"]
+    sitemaps = list(rp.sitemaps) or await attempt_to_find_sitemaps(domain)
+    return rp, sitemaps
 
 
 def extract_links(
@@ -103,28 +160,29 @@ async def process_page(
     tree = LexborHTMLParser(html_content)
     links = extract_links(tree, url, target_domain)
 
-    for link in links:
-        if await url_exists(db, link):
-            continue
-        new_depth = page.depth + 1
-        if new_depth > settings.max_depth:
-            continue
+    new_depth = page.depth + 1
+    if new_depth <= settings.max_depth and links:
         try:
-            await insert_page(db, link, new_depth, url)
+            await insert_pages(db, links, new_depth, url)
         except aiosqlite.DatabaseError as e:
             print(
-                f"[ERROR] Could not complete link processing for '{link}' (reason: {e!s})"
+                f"[ERROR] Could not insert links discovered on '{url}' (reason: {e!s})"
             )
 
     # extract and persist main text content from `tree`
     chunks = chunk_blocks(extract_blocks(tree), 500)
     print(f"Saving {len(chunks)} chunks for {url}...")
-    await asyncio.gather(
-        *[
-            embed_and_store_chunk(db, collection, page.id, chunk_idx, chunk)
-            for chunk_idx, chunk in enumerate(chunks)
-        ]
-    )
+    try:
+        await asyncio.gather(
+            *[
+                embed_and_store_chunk(db, collection, page.id, chunk_idx, chunk)
+                for chunk_idx, chunk in enumerate(chunks)
+            ]
+        )
+    except openai.APIError as e:
+        print(
+            f"[WARNING] Embedding failed for {url} ({e!s}); page still marked crawled."
+        )
 
     await mark_status(db, url, PageStatus.CRAWLED, crawled_at=datetime.now(UTC))
     print(f"Crawled {url}.")

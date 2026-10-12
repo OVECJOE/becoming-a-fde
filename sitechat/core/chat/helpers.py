@@ -12,6 +12,7 @@ from core.chat.prompts import (
     TITLE_USER_TEMPLATE,
 )
 from core.chat.schemas import ChatSummary, ChatTitle
+from core.config import settings
 from core.db.repository import (
     append_message,
     count_exchanges,
@@ -25,7 +26,10 @@ from core.db.repository import (
 )
 
 load_dotenv()
-structured_client = openai.AsyncOpenAI()
+structured_client = openai.AsyncOpenAI(
+    timeout=settings.openai_timeout_seconds,
+    max_retries=settings.openai_max_retries,
+)
 
 SUMMARY_EVERY = 5
 RECENT_FOR_PROMPT = 3

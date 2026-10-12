@@ -6,9 +6,13 @@ from dotenv import load_dotenv
 
 from core.chat.embedder import retrieve_relevant_chunks
 from core.chat.prompts import CHAT_SYSTEM_PROMPT
+from core.config import settings
 
 load_dotenv()
-chat_client = openai.AsyncOpenAI()
+chat_client = openai.AsyncOpenAI(
+    timeout=settings.openai_timeout_seconds,
+    max_retries=settings.openai_max_retries,
+)
 
 
 def _build_question(
@@ -31,7 +35,11 @@ async def chat(
     summary: str | None = None,
     recent: Sequence[tuple[str, str]] = (),
 ) -> AsyncGenerator[str, None]:
-    chunks = await retrieve_relevant_chunks(collection, question)
+    try:
+        chunks = await retrieve_relevant_chunks(collection, question)
+    except openai.APIError as e:
+        yield f"Failed to reach the LLM provider: {e!s}"
+        return
     if not chunks:
         yield "I couldn't find anything relevant on this site to answer that."
         return

@@ -3,10 +3,14 @@ import openai
 from chromadb import Collection
 from dotenv import load_dotenv
 
+from core.config import settings
 from core.db.repository import insert_page_chunk
 
 load_dotenv()
-embedding_client = openai.AsyncOpenAI()
+embedding_client = openai.AsyncOpenAI(
+    timeout=settings.openai_timeout_seconds,
+    max_retries=settings.openai_max_retries,
+)
 
 
 async def embed_text(text: str) -> list[float]:

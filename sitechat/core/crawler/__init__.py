@@ -3,23 +3,35 @@ import asyncio
 import aiosqlite
 from chromadb import Collection
 
-from core.crawler.repository import build_seed_urls, crawl_loop, get_crawl_rules
-from core.db.repository import insert_page, url_exists
+from core.config import settings
+from core.crawler.repository import (
+    collect_seed_urls,
+    crawl_loop,
+    get_crawl_rules,
+)
+from core.db.repository import insert_pages
 
 
 async def crawl(db: aiosqlite.Connection, collection: Collection, domain: str):
     print(f"Resolving crawl rules for {domain}...")
-    rp, seed_urls = await get_crawl_rules(domain)
-    print(f"Found {len(seed_urls)} seed URLs for {domain}.")
-    if len(seed_urls) == 1:
-        print(f"Expanding seed URL {seed_urls[0]}...")
-        seed_urls = await build_seed_urls(seed_urls[0])
-        print(f"Expanded to {len(seed_urls)} seed URLs.")
+    rp, seed_sitemaps = await get_crawl_rules(domain)
+    print(f"Found {len(seed_sitemaps)} root sitemaps for {domain}.")
 
-    print(f"Seeding {len(seed_urls)} URLs...")
-    for url in seed_urls:
-        if not await url_exists(db, url):
-            await insert_page(db, url, depth=0, parent_url=None)
+    # Expand the (possibly nested) sitemaps into concrete page URLs to seed the queue.
+    seed_urls = await collect_seed_urls(
+        seed_sitemaps, settings.user_agent, settings.sitemap_max_depth
+    )
+    print(f"Expanded sitemaps into {len(seed_urls)} seed URLs for {domain}.")
+
+    # Store the seed urls for the crawl loop to pick up, in one batch.
+    try:
+        inserted = await insert_pages(db, seed_urls, depth=0, parent_url=None)
+    except aiosqlite.DatabaseError as e:
+        print(f"[ERROR] Could not seed pages for {domain} (reason: {e!s})")
+    else:
+        print(
+            f"Seeded {inserted} new pages ({len(seed_urls) - inserted} already present)."
+        )
     print("Seeding complete.")
 
     print(f"Starting crawl loop for {domain}...")
