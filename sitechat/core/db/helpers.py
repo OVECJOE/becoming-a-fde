@@ -4,7 +4,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from core.constants import DATABASE_URL, DB_MIGRATIONS_DIR
+from core.config import settings
+from core.constants import DB_MIGRATIONS_DIR
 
 
 def _version_key(version: str) -> tuple[str, int]:
@@ -46,7 +47,7 @@ def save_config(new_config: dict[str, int | str]):
 
 
 async def init_db() -> aiosqlite.Connection:
-    return await aiosqlite.connect(DATABASE_URL)
+    return await aiosqlite.connect(settings.db_path)
 
 
 async def apply_migrations(

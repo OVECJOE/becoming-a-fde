@@ -5,6 +5,7 @@ from chromadb import Collection
 
 from core.config import settings
 from core.crawler.repository import (
+    build_seed_urls,
     collect_seed_urls,
     crawl_loop,
     get_crawl_rules,
@@ -22,6 +23,8 @@ async def crawl(db: aiosqlite.Connection, collection: Collection, domain: str):
         seed_sitemaps, settings.user_agent, settings.sitemap_max_depth
     )
     print(f"Expanded sitemaps into {len(seed_urls)} seed URLs for {domain}.")
+    if len(seed_urls) == 0:
+        seed_urls = await build_seed_urls(f"https://{domain}")
 
     # Store the seed urls for the crawl loop to pick up, in one batch.
     try:

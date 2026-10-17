@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from core.chat import chat, get_context, open_new_chat, record_exchange
-from core.constants import DATABASE_URL, PROJECT_ROOT
+from core.config import settings
 from core.crawler import crawl
 from core.db import setup_db
 from core.db.helpers import init_db
@@ -74,7 +74,7 @@ APP_STYLE = Style.from_dict(
 
 def _read_chats_sync(fragment: str, limit: int = 20) -> list[dict]:
     try:
-        con = sqlite3.connect(str(DATABASE_URL))
+        con = sqlite3.connect(str(settings.db_path))
     except sqlite3.Error:
         return []
     try:
@@ -279,7 +279,7 @@ async def _startup():
     db = await init_db()
 
     console.print("[dim]Setting up chromadb persistent client...[/dim]")
-    client = chromadb.PersistentClient(path=PROJECT_ROOT.joinpath(".chromadb-data"))
+    client = chromadb.PersistentClient(path=settings.chroma_path)
     collection = client.get_or_create_collection(
         name="sitechat_chunks", metadata={"hnsw:space": "cosine"}
     )

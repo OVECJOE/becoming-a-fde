@@ -34,14 +34,19 @@ async def fetch_page(
     url: str, user_agent: str, content_type: str = "text/html", timeout: float = 15.0
 ) -> str:
     print(f"Fetching {url}...")
-    response = await get_client().get(
-        url,
-        timeout=timeout,
-        headers={"Accept": content_type, "User-Agent": user_agent},
-    )
-    response.raise_for_status()
-    print(f"Fetched {url}.")
-    return response.text
+    try:
+        response = await get_client().get(
+            url,
+            follow_redirects=True,
+            timeout=timeout,
+            headers={"Accept": content_type, "User-Agent": user_agent},
+        )
+        response.raise_for_status()
+        print(f"Fetched {url}.")
+        return response.text
+    except httpx.HTTPError:
+        print(f"[WARNING]: could not fetch Page({url})")
+        return ""
 
 
 def extract_locs(root: ET.Element) -> list[str]:

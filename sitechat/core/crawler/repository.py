@@ -175,7 +175,7 @@ async def process_page(
     try:
         await asyncio.gather(
             *[
-                embed_and_store_chunk(db, collection, page.id, chunk_idx, chunk)
+                embed_and_store_chunk(db, collection, page, chunk_idx, chunk)
                 for chunk_idx, chunk in enumerate(chunks)
             ]
         )

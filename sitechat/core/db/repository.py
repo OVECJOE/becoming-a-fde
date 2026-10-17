@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 import aiosqlite
 
@@ -78,6 +79,20 @@ async def fetch_pending(db: aiosqlite.Connection, limit: int):
         ]
         await db.commit()
         return results
+
+
+async def get_page(
+    db: aiosqlite.Connection, page_id: int, columns: list[str] | Literal["*"] = "*"
+):
+    sql = """
+        SELECT ? FROM pages
+        WHERE id = ?
+        LIMIT 1
+    """
+    async with db.execute(
+        sql, (columns if columns == "*" else ",".join(columns), page_id)
+    ) as cursor:
+        return await cursor.fetchone()
 
 
 async def mark_status(

@@ -1,13 +1,13 @@
 import aiosqlite
 
-from core.constants import DATABASE_URL
+from core.config import settings
 from core.db.helpers import apply_migrations, load_config, save_config
 
 
 async def setup_db():
     print("Checking for pending migrations...")
     config = load_config()
-    async with aiosqlite.connect(DATABASE_URL) as db:
+    async with aiosqlite.connect(settings.db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         stats = await apply_migrations(db, config["current_version"])
 
