@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 
@@ -8,61 +7,69 @@ from core.config import settings
 from core.constants import DB_MIGRATIONS_DIR
 
 
-def _version_key(version: str) -> tuple[str, int]:
-    """'c100' -> ('c', 100)"""
-    m = re.match(r"([a-z])(\d+)", version)
-    assert m is not None
-    return (m.group(1), int(m.group(2)))
-
-
-def _extract_version_prefix(s: str) -> str:
-    m = re.match(r"^([a-z]\d+)", s)
+def _extract_version_prefix(name: str) -> str:
+    m = re.match(r"^([a-z]\d+)", name)
     assert m is not None
     return m.group(1)
 
 
-def newer_files(dir: Path, current: str) -> list[Path]:
-    """Files in `dir` whose prefix (representing its version) is strictly greater than `current`."""
-    threshold = _version_key(current)
-    results = []
-    for f in dir.iterdir():
+def _version_code(prefix: str) -> int:
+    m = re.match(r"([a-z])(\d+)", prefix)
+    assert m is not None
+    return (ord(m.group(1)) - 96) * 10000 + int(m.group(2))
+
+
+def pending_migrations(directory: Path, current_code: int) -> list[Path]:
+    files = []
+    for f in directory.iterdir():
         if not f.is_file():
             continue
         m = re.match(r"^([a-z]\d+)", f.name)
-        if m and _version_key(m.group(1)) > threshold:
-            results.append(f)
-    return sorted(results, key=lambda f: _version_key(_extract_version_prefix(f.name)))
+        if m and _version_code(m.group(1)) > current_code:
+            files.append(f)
+    return sorted(
+        files, key=lambda f: _version_code(_extract_version_prefix(f.name))
+    )
 
 
-def load_config():
-    config_path = DB_MIGRATIONS_DIR.joinpath(".config.json")
-    with open(config_path, "r") as f:
-        return json.load(f)
+async def _has_table(db: aiosqlite.Connection, table: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    )
+    return await cursor.fetchone() is not None
 
 
-def save_config(new_config: dict[str, int | str]):
-    config_path = DB_MIGRATIONS_DIR.joinpath(".config.json")
-    with open(config_path, "w") as f:
-        json.dump(new_config, f, indent=2)
+async def _table_columns(db: aiosqlite.Connection, table: str) -> set[str]:
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    return {row[1] for row in rows}
+
+
+async def _detect_version_code(db: aiosqlite.Connection) -> int:
+    if not await _has_table(db, "pages"):
+        return 0
+    if not await _has_table(db, "page_chunks"):
+        return _version_code("a1")
+    if not await _has_table(db, "chats"):
+        return _version_code("a2")
+    if "site_id" not in await _table_columns(db, "pages"):
+        return _version_code("a3")
+    if "site_id" not in await _table_columns(db, "chats"):
+        return _version_code("b1")
+    cursor = await db.execute("PRAGMA index_list(chats)")
+    indexes = await cursor.fetchall()
+    if any(row[3] == "u" for row in indexes):
+        return _version_code("c1")
+    return _version_code("c2")
 
 
 async def init_db() -> aiosqlite.Connection:
-    return await aiosqlite.connect(settings.db_path)
-
-
-async def apply_migrations(
-    db: aiosqlite.Connection, current_version: str
-) -> tuple[int, str] | None:
-    new_ones = newer_files(DB_MIGRATIONS_DIR, current_version)
-    migration_count = len(new_ones)
-    if migration_count == 0:
-        return None
-
-    print(f"Applying {migration_count} migrations...")
-    for file_path in new_ones:
-        print(f"Applying {file_path.name}...")
-        with open(file_path, "r") as f:
-            await db.executescript(f.read())
-            await db.commit()
-        print(f"Applied {file_path.name}.")
-    return migration_count, _extract_version_prefix(new_ones[-1].name)
+    db = await aiosqlite.connect(settings.db_path)
+    await db.execute("PRAGMA journal_mode = WAL")
+    await db.execute("PRAGMA synchronous = NORMAL")
+    await db.execute("PRAGMA foreign_keys = ON")
+    await db.execute("PRAGMA busy_timeout = 5000")
+    await db.execute("PRAGMA temp_store = MEMORY")
+    await db.execute("PRAGMA cache_size = -64000")
+    return db

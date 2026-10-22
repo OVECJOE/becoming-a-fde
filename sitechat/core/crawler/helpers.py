@@ -6,8 +6,6 @@ from selectolax.lexbor import LexborHTMLParser
 
 from core.constants import BLOCK_SELECTORS, NOISE_SELECTORS
 
-# One shared client for the whole process so requests reuse connections (keep-alive
-# and the TLS session) instead of paying a fresh handshake on every fetch.
 _client: httpx.AsyncClient | None = None
 
 
@@ -32,7 +30,7 @@ def _local_name(tag: object) -> str:
 
 async def fetch_page(
     url: str, user_agent: str, content_type: str = "text/html", timeout: float = 15.0
-) -> str:
+) -> str | None:
     print(f"Fetching {url}...")
     try:
         response = await get_client().get(
@@ -46,7 +44,7 @@ async def fetch_page(
         return response.text
     except httpx.HTTPError:
         print(f"[WARNING]: could not fetch Page({url})")
-        return ""
+        return None
 
 
 def extract_locs(root: ET.Element) -> list[str]:
@@ -72,14 +70,10 @@ def sitemap_kind(root: ET.Element) -> Literal["index", "urlset", "unknown"]:
 
 
 async def fetch_sitemap_root(url: str, user_agent: str) -> ET.Element:
-    """Fetch a sitemap and return its parsed XML root.
-
-    Raises `httpx.HTTPError` on network failure and `ET.ParseError` when the
-    response is not XML (e.g. an HTML error page served with a 200).
-    """
-    print(f"Parsing sitemap {url}...")
-    xml_content = await fetch_page(url, user_agent, content_type="application/xml")
-    return ET.fromstring(xml_content)
+    content = await fetch_page(url, user_agent, content_type="application/xml")
+    if content is None:
+        raise httpx.HTTPError(f"could not fetch sitemap {url}")
+    return ET.fromstring(content)
 
 
 def extract_blocks(tree: LexborHTMLParser) -> list[str]:

@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Iterable
 
 import aiosqlite
+
+from core.urls import normalize_host, normalize_url
 
 
 class PageStatus(StrEnum):
@@ -12,135 +14,152 @@ class PageStatus(StrEnum):
     FAILED = "failed"
 
 
-async def insert_page(
-    db: aiosqlite.Connection, url: str, depth: int, parent_url: str | None
-):
-    if await url_exists(db, url):
-        return 0
+async def get_or_create_site(db: aiosqlite.Connection, domain: str) -> dict:
+    normalized = normalize_host(domain)
+    now = datetime.now(UTC)
+    await db.execute(
+        "INSERT OR IGNORE INTO sites (domain, created_at) VALUES (?, ?)",
+        (normalized, now),
+    )
+    await db.commit()
+    async with db.execute(
+        "SELECT id, domain FROM sites WHERE domain = ?", (normalized,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    return {"id": row[0], "domain": row[1]}
 
+
+async def list_sites(db: aiosqlite.Connection) -> list[dict]:
     sql = """
-        INSERT INTO pages (
-            url,
-            status,
-            parent_url,
-            depth,
-            created_at
-        ) VALUES (?, 'pending', ?, ?, ?)
+        SELECT s.id, s.domain, COUNT(p.id), COALESCE(SUM(p.status = 'crawled'), 0)
+        FROM sites s
+        LEFT JOIN pages p ON p.site_id = s.id
+        GROUP BY s.id
+        ORDER BY s.domain ASC
     """
-    async with db.execute(sql, (url, parent_url, depth, datetime.now(UTC))) as cursor:
-        await db.commit()
-        assert cursor.rowcount == 1
-        return cursor.rowcount
+    async with db.execute(sql) as cursor:
+        return [
+            {
+                "id": row[0],
+                "domain": row[1],
+                "page_count": row[2],
+                "crawled_count": row[3],
+            }
+            for row in await cursor.fetchall()
+        ]
+
+
+async def recover_stale_pages(db: aiosqlite.Connection) -> int:
+    cursor = await db.execute(
+        "UPDATE pages SET status = 'pending' WHERE status = 'in_progress'"
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def count_site_pages(db: aiosqlite.Connection, site_id: int) -> int:
+    async with db.execute(
+        "SELECT COUNT(*) FROM pages WHERE site_id = ? AND status = 'crawled'",
+        (site_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
 
 async def insert_pages(
-    db: aiosqlite.Connection, urls: list[str], depth: int, parent_url: str | None
+    db: aiosqlite.Connection,
+    site_id: int,
+    entries: Iterable[tuple[str, int, str | None]],
 ) -> int:
-    """Bulk-insert pages in a single transaction.
-
-    Relies on the UNIQUE constraint on `pages.url`: `INSERT OR IGNORE` skips any
-    URL that's already present, so there's no per-row existence check and only one
-    commit for the whole batch (instead of one per row). Returns the number of
-    rows actually inserted.
-    """
-    if not urls:
-        return 0
     now = datetime.now(UTC)
-    rows = [(url, parent_url, depth, now) for url in urls]
+    rows = {
+        (site_id, normalize_url(url), normalize_url(parent) if parent else None, depth, now)
+        for url, depth, parent in entries
+    }
+    if not rows:
+        return 0
     sql = """
         INSERT OR IGNORE INTO pages (
+            site_id,
             url,
             status,
             parent_url,
             depth,
             created_at
-        ) VALUES (?, 'pending', ?, ?, ?)
+        ) VALUES (?, ?, 'pending', ?, ?, ?)
     """
     async with db.executemany(sql, rows) as cursor:
         await db.commit()
         return cursor.rowcount
 
 
-async def fetch_pending(db: aiosqlite.Connection, limit: int):
+async def fetch_pending(
+    db: aiosqlite.Connection, site_id: int, limit: int
+) -> list[dict]:
     sql = """
         UPDATE pages SET status = 'in_progress'
         WHERE id IN (
             SELECT id FROM pages
-            WHERE status = 'pending'
-            ORDER BY created_at ASC
+            WHERE site_id = ? AND status = 'pending'
+            ORDER BY id ASC
             LIMIT ?
         )
         RETURNING id, url, depth
     """
-    async with db.execute(sql, (limit,)) as cursor:
-        results = [
-            {"id": row[0], "url": row[1], "depth": row[2]}
-            for row in await cursor.fetchall()
-        ]
-        await db.commit()
-        return results
+    async with db.execute(sql, (site_id, limit)) as cursor:
+        rows = await cursor.fetchall()
+    await db.commit()
+    return [
+        {"id": row[0], "url": row[1], "depth": row[2]} for row in rows
+    ]
 
 
-async def get_page(
-    db: aiosqlite.Connection, page_id: int, columns: list[str] | Literal["*"] = "*"
-):
-    sql = """
-        SELECT ? FROM pages
-        WHERE id = ?
-        LIMIT 1
-    """
-    async with db.execute(
-        sql, (columns if columns == "*" else ",".join(columns), page_id)
-    ) as cursor:
-        return await cursor.fetchone()
-
-
-async def mark_status(
-    db: aiosqlite.Connection, url: str, status: str, crawled_at: datetime | None = None
-):
+async def mark_pages(
+    db: aiosqlite.Connection, updates: list[tuple[int, str, datetime | None]]
+) -> None:
     sql = """
         UPDATE pages SET status = ?, crawled_at = ?
-        WHERE url = ?
+        WHERE id = ?
     """
-    await db.execute(
-        sql, (status, crawled_at if status == PageStatus.CRAWLED else None, url)
-    )
-    await db.commit()
+    async with db.executemany(sql, [(s, c, i) for i, s, c in updates]) as cursor:
+        await db.commit()
 
 
-async def url_exists(db: aiosqlite.Connection, url: str) -> bool:
-    async with db.execute(
-        "SELECT COUNT(url) FROM pages WHERE url = ?", (url,)
-    ) as cursor:
-        result = await cursor.fetchone()
-        return result[0] > 0 if result else False
-
-
-async def insert_page_chunk(
-    db: aiosqlite.Connection, page_id: int, chunk_index: int, chunk: str
-):
-    sql = """
+async def insert_page_chunks(
+    db: aiosqlite.Connection, rows: list[tuple[int, int, str]]
+) -> list[int]:
+    if not rows:
+        return []
+    now = datetime.now(UTC)
+    placeholders = ",".join(["(?, ?, ?, ?)"] * len(rows))
+    sql = f"""
         INSERT INTO page_chunks (
             page_id,
             content,
             chunk_index,
             created_at
-        ) VALUES (?, ?, ?, ?)
+        ) VALUES {placeholders}
+        RETURNING id
     """
-    async with db.execute(
-        sql, (page_id, chunk, chunk_index, datetime.now(UTC))
-    ) as cursor:
-        row_id = cursor.lastrowid
-        await db.commit()
-        assert cursor.rowcount == 1
-        return row_id
+    params = [
+        value
+        for page_id, index, content in rows
+        for value in (page_id, content, index, now)
+    ]
+    async with db.execute(sql, params) as cursor:
+        ids = [row[0] for row in await cursor.fetchall()]
+    await db.commit()
+    return ids
 
 
-async def create_chat(db: aiosqlite.Connection, title: str) -> int:
+async def create_chat(
+    db: aiosqlite.Connection, title: str, site_id: int | None = None
+) -> int:
     now = datetime.now(UTC)
     async with db.execute(
-        "INSERT INTO chats (title, last_user_prompt, last_ai_response, created_at, updated_at) VALUES (?, '', '', ?, ?)",
-        (title, now, now),
+        "INSERT INTO chats (title, site_id, last_user_prompt, last_ai_response, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?)",
+        (title, site_id, now, now, now),
     ) as cursor:
         chat_id = cursor.lastrowid
         await db.commit()
@@ -150,16 +169,21 @@ async def create_chat(db: aiosqlite.Connection, title: str) -> int:
 
 
 async def list_chats(db: aiosqlite.Connection, limit: int = 20) -> list[dict]:
-    async with db.execute(
-        "SELECT id, title, last_user_prompt, updated_at FROM chats ORDER BY updated_at DESC LIMIT ?",
-        (limit,),
-    ) as cursor:
+    sql = """
+        SELECT c.id, c.title, c.last_user_prompt, c.updated_at, s.domain
+        FROM chats c
+        LEFT JOIN sites s ON s.id = c.site_id
+        ORDER BY c.updated_at DESC
+        LIMIT ?
+    """
+    async with db.execute(sql, (limit,)) as cursor:
         return [
             {
                 "id": row[0],
                 "title": row[1],
                 "last_user_prompt": row[2],
                 "updated_at": row[3],
+                "site": row[4],
             }
             for row in await cursor.fetchall()
         ]
@@ -169,30 +193,54 @@ async def search_chats(
     db: aiosqlite.Connection, fragment: str, limit: int = 20
 ) -> list[dict]:
     like = f"%{fragment}%"
-    async with db.execute(
-        "SELECT id, title, updated_at FROM chats WHERE title LIKE ? OR CAST(id AS TEXT) LIKE ? ORDER BY updated_at DESC LIMIT ?",
-        (like, like, limit),
-    ) as cursor:
+    sql = """
+        SELECT c.id, c.title, c.updated_at, s.domain
+        FROM chats c
+        LEFT JOIN sites s ON s.id = c.site_id
+        WHERE c.title LIKE ? OR CAST(c.id AS TEXT) LIKE ?
+        ORDER BY c.updated_at DESC
+        LIMIT ?
+    """
+    async with db.execute(sql, (like, like, limit)) as cursor:
         return [
-            {"id": row[0], "title": row[1], "updated_at": row[2]}
+            {
+                "id": row[0],
+                "title": row[1],
+                "updated_at": row[2],
+                "site": row[3],
+            }
             for row in await cursor.fetchall()
         ]
 
 
 async def get_chat(db: aiosqlite.Connection, chat_id: int) -> dict | None:
-    async with db.execute(
-        "SELECT id, title FROM chats WHERE id = ?", (chat_id,)
-    ) as cursor:
+    sql = """
+        SELECT c.id, c.title, c.site_id, s.domain
+        FROM chats c
+        LEFT JOIN sites s ON s.id = c.site_id
+        WHERE c.id = ?
+        LIMIT 1
+    """
+    async with db.execute(sql, (chat_id,)) as cursor:
         row = await cursor.fetchone()
-        return {"id": row[0], "title": row[1]} if row else None
+        if row is None:
+            return None
+        return {"id": row[0], "title": row[1], "site_id": row[2], "site": row[3]}
 
 
 async def find_chat_by_title(db: aiosqlite.Connection, title: str) -> dict | None:
-    async with db.execute(
-        "SELECT id, title FROM chats WHERE title = ? COLLATE NOCASE", (title,)
-    ) as cursor:
+    sql = """
+        SELECT c.id, c.title, c.site_id, s.domain
+        FROM chats c
+        LEFT JOIN sites s ON s.id = c.site_id
+        WHERE c.title = ? COLLATE NOCASE
+        LIMIT 1
+    """
+    async with db.execute(sql, (title,)) as cursor:
         row = await cursor.fetchone()
-        return {"id": row[0], "title": row[1]} if row else None
+        if row is None:
+            return None
+        return {"id": row[0], "title": row[1], "site_id": row[2], "site": row[3]}
 
 
 async def append_message(

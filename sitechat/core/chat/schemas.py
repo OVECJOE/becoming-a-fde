@@ -1,4 +1,14 @@
+from dataclasses import dataclass, field
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class ChatEvent:
+    kind: Literal["status", "token", "sources", "error"]
+    text: str = ""
+    sources: list[dict] = field(default_factory=list)
 
 
 class ChatTitle(BaseModel):

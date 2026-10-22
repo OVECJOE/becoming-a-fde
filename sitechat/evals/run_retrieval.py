@@ -3,25 +3,13 @@ import json
 from pathlib import Path
 
 import chromadb
-from yarl import URL
 
 from core.chat import retrieve_relevant_chunks
 from core.config import settings
+from core.urls import normalize_url
 
 QUESTIONS_FILE = Path(__file__).parent / "questions.jsonl"
 K = 30
-
-
-def normalize_url(url: str) -> str:
-    parsed = URL(url)
-    url_obj = parsed.with_fragment(None)
-
-    path = url_obj.path.rstrip("/")
-    url_obj = url_obj.with_path(path or "/")
-
-    url_obj = url_obj.with_query(sorted(url_obj.query.items()))
-    url_obj = url_obj.with_port(None)
-    return str(url_obj)
 
 
 def load_questions() -> list[dict]:

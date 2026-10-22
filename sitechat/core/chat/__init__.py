@@ -1,6 +1,7 @@
 from core.chat.embedder import (
-    embed_and_store_chunk,
-    embed_text,
+    add_page_chunks,
+    backfill_chunk_sites,
+    embed_texts,
     retrieve_relevant_chunks,
 )
 from core.chat.helpers import (
@@ -10,15 +11,17 @@ from core.chat.helpers import (
     record_exchange,
 )
 from core.chat.repository import chat
-from core.chat.schemas import ChatSummary, ChatTitle
+from core.chat.schemas import ChatEvent, ChatSummary, ChatTitle
 
 __all__ = [
     "SUMMARY_EVERY",
+    "ChatEvent",
     "ChatSummary",
     "ChatTitle",
+    "add_page_chunks",
+    "backfill_chunk_sites",
     "chat",
-    "embed_and_store_chunk",
-    "embed_text",
+    "embed_texts",
     "get_context",
     "open_new_chat",
     "record_exchange",

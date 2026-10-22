@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     user_agent: str = "SitechatBot/1.0 (+https://github.com/OVECJOE/becoming-a-fde)"
     max_depth: int = 5
     crawl_delay_seconds: float = 3
+    crawl_batch_size: int = 5
     sitemap_max_depth: int = 3
     openai_timeout_seconds: float = 60.0
     openai_max_retries: int = 3

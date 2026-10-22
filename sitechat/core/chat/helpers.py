@@ -17,6 +17,7 @@ from core.db.repository import (
     append_message,
     count_exchanges,
     create_chat,
+    get_chat,
     get_first_exchange,
     get_history,
     get_recent_exchanges,
@@ -36,15 +37,19 @@ RECENT_FOR_PROMPT = 3
 UNTITLED_PREFIX = "Untitled chat"
 
 
-async def open_new_chat(db: aiosqlite.Connection, title: str | None = None) -> dict:
+async def open_new_chat(
+    db: aiosqlite.Connection, title: str | None = None, site_id: int | None = None
+) -> dict:
     if title:
-        chat_id = await create_chat(db, title)
-        return {"id": chat_id, "title": title}
-    provisional = (
-        f"{UNTITLED_PREFIX} {datetime.now(UTC).isoformat(timespec='microseconds')}"
-    )
-    chat_id = await create_chat(db, provisional)
-    return {"id": chat_id, "title": provisional}
+        chat_id = await create_chat(db, title, site_id)
+    else:
+        provisional = (
+            f"{UNTITLED_PREFIX} {datetime.now(UTC).isoformat(timespec='microseconds')}"
+        )
+        chat_id = await create_chat(db, provisional, site_id)
+    chat = await get_chat(db, chat_id)
+    assert chat is not None
+    return chat
 
 
 async def get_context(
